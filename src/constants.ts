@@ -36,6 +36,61 @@ export const REQUEST_TIMEOUT_MS = 30_000;
  */
 export const POSITION_STEP = 65_536;
 
+/**
+ * Planka's label palette, in the order the UI shows it.
+ *
+ * `color` is required by `POST /boards/{boardId}/labels` and the names are not
+ * guessable ("pirate-gold", "wet-moss"), so the list is carried here rather
+ * than left to the caller: it is both the validation set and, when the caller
+ * names no colour, the rotation a new label is picked from.
+ */
+export const LABEL_COLORS = [
+  "berry-red",
+  "pumpkin-orange",
+  "lagoon-blue",
+  "pink-tulip",
+  "light-mud",
+  "orange-peel",
+  "bright-moss",
+  "antique-blue",
+  "dark-granite",
+  "turquoise-sea",
+  "midnight-blue",
+  "egg-yellow",
+  "sunny-grass",
+  "morning-sky",
+  "light-orange",
+  "coral-green",
+  "sugar-plum",
+  "lilac-eyes",
+  "apricot-red",
+  "desert-sand",
+  "navy-blue",
+  "summer-sky",
+  "deep-ocean",
+  "autumn-leafs",
+  "fresh-salad",
+  "light-cocoa",
+  "silver-glint",
+  "grey-stone",
+  "tank-green",
+  "shady-rust",
+  "wet-rock",
+  "wet-moss",
+  "lavender-fields",
+  "piggy-red",
+  "gun-metal",
+  "modern-green",
+  "french-coast",
+  "sweet-lilac",
+  "red-burgundy",
+  "pirate-gold",
+  "muddy-grey",
+  "light-concrete",
+] as const;
+
+export type LabelColor = (typeof LABEL_COLORS)[number];
+
 /* Context budgets. A tool result larger than this is truncated with a note. */
 export const CHARACTER_LIMIT = 25_000;
 

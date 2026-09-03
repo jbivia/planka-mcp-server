@@ -166,6 +166,7 @@ npx @modelcontextprotocol/inspector --cli node dist/index.js -e PLANKA_BASE_URL=
 | `planka_create_project` | oui | Créer un projet |
 | `planka_create_board` | oui | Créer un tableau, avec ses colonnes si on veut |
 | `planka_create_list` | oui | Ajouter une colonne à un tableau |
+| `planka_create_label` | oui | Définir un label sur un tableau |
 | `planka_share_project` | oui | Donner à un autre utilisateur l'accès à un projet ou à ses tableaux |
 
 ### Déplacer une carte
@@ -200,6 +201,21 @@ Trois outils créent projets, tableaux et listes. Le cas courant tient en un app
 Sans `lists`, le tableau n'a que les listes système `archive` et `trash` de Planka : aucune
 colonne, donc `planka_create_card` y échouerait. La réponse le dit explicitement plutôt que
 de laisser l'agent le découvrir.
+
+Même chose pour les labels, avec un piège en plus : un tableau créé **par l'API** n'en a
+aucun, là où l'interface Planka en pose une série au départ. `planka_set_card_label` ne sait
+qu'appliquer un label existant — sur un tableau créé par le serveur, il n'y avait donc rien à
+appliquer. D'où `labels` sur `planka_create_board`, et `planka_create_label` pour en ajouter
+un après coup :
+
+```jsonc
+{ "project": "Infrastructure", "name": "Roadmap",
+  "lists": ["Backlog", "En cours", "Terminé"], "labels": ["bug", "urgent"] }
+```
+
+La couleur est facultative : par défaut le serveur prend la première des 42 couleurs Planka
+que le tableau n'utilise pas encore. Deux labels de la même couleur sont indiscernables sur
+une carte, qui est le seul endroit où on les lit.
 
 `POST /projects/{id}/boards` est le seul endpoint de l'API en `multipart/form-data` — il
 sert aussi à l'import Trello — d'où le mode formulaire du client HTTP.
@@ -291,8 +307,10 @@ Use the exact name, or the id of the one you mean.
   tableaux « Roadmap » dans un projet, ce qui rendrait les deux inatteignables par nom.
 - `planka_share_project` n'enlève aucun accès : il ne sait qu'ajouter. Retirer un membre ou
   un chef de projet se fait dans l'interface Planka.
-- Le serveur ne crée pas de label. Un agent qui en crée à la volée transforme une
-  taxonomie en broussaille en quelques sessions.
+- Créer un label est un outil à part, jamais un effet de bord de `planka_set_card_label` :
+  un agent qui en crée à la volée pour poser un tag transforme une taxonomie en broussaille
+  en quelques sessions. Il refuse un nom déjà pris, comme les autres outils de création, et
+  sa description invite à réutiliser ce que `planka_describe_board` liste.
 
 ---
 

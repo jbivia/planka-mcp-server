@@ -289,5 +289,7 @@ export interface BoardSnapshot {
   cards: CardSummary[];
   /** Raw cards kept alongside the projections, for position arithmetic. */
   rawCards: PlankaCard[];
+  /** Same, for labels: `LabelSummary` drops `position`, which a new label needs. */
+  rawLabels: PlankaLabel[];
   fetchedAt: number;
 }

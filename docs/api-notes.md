@@ -359,6 +359,12 @@ cette structure mais n'en supprime aucune.
 - **Le créateur d'un board en devient automatiquement membre `editor`**, via un
   `boardMembership` créé en même temps. Aucun appel supplémentaire n'est nécessaire pour
   pouvoir s'assigner ses propres cartes.
+- **Un board créé par l'API n'a aucun label.** Vérifié : `planka_describe_board` sur un board
+  fraîchement créé rend « _No labels._ ». L'interface Planka, elle, en pose une série à la
+  création — d'où l'illusion que le board en a toujours. `POST /boards/{boardId}/labels` exige
+  `color` **et** `position` ; `name` est facultatif (un label peut n'être qu'une couleur).
+  Les 42 noms de couleurs sont repris dans `constants.ts`, vérifiés un à un contre l'enum du
+  swagger de l'instance.
 
 ---
 
