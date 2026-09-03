@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  # `pull_request` et non `pull_request_target` : sur un depot public, une PR
+  # venant d'un fork execute du code non revu. Avec `pull_request`, GitHub lui
+  # donne un GITHUB_TOKEN en lecture seule et aucun secret. `pull_request_target`
+  # ferait l'inverse -- contexte du depot cible, secrets disponibles -- et
+  # donnerait le depot a quiconque ouvre une PR. Ne pas changer ce declencheur.
+  pull_request:
+
+# Permissions minimales par defaut ; chaque job elargit si besoin.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # 24 = minimum supporte (package.json engines), 26 = version courante.
+        node: ['24', '26']
+    steps:
+      # Actions epinglees par SHA : un tag git est mutable, et un tag compromis
+      # executerait du code arbitraire dans la CI. Renovate maintient ces
+      # digests a jour (matchUpdateTypes inclut "digest").
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Sans ca, le token est ecrit dans .git/config et reste lisible par
+          # toutes les etapes suivantes, y compris le code des dependances.
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # --ignore-scripts : `npm ci` execute sinon les postinstall de tout l'arbre
+      # de dependances, soit du code arbitraire d'un tiers dans la CI. Verifie :
+      # le build et les 73 tests passent sans eux.
+      - run: npm ci --ignore-scripts
+
+      - run: npm run build
+      - run: npm test
+
+      - name: Smoke test (le serveur build echoue proprement sans identifiants)
+        run: |
+          set +e
+          output=$(node dist/index.js --check 2>&1)
+          status=$?
+          set -e
+          echo "$output"
+          if [ "$status" -eq 0 ]; then
+            echo "::error::--check a reussi sans identifiants Planka"
+            exit 1
+          fi
+          case "$output" in
+            *"Missing required environment variable"*) ;;
+            *) echo "::error::echec inattendu, le graphe de modules est peut-etre casse"; exit 1 ;;
+          esac
+
+  # Bloque une PR qui introduirait une dependance vulnerable ou une licence
+  # incompatible, avant qu'elle n'entre dans main.
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure

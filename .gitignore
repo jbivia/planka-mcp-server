@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env*
+!.env.example
+*.log
+
+# Cahier des charges d'origine, document de travail interne.
+docs/mcp-spec.md

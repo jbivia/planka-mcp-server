@@ -1,0 +1,75 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":semanticCommits"],
+  "timezone": "Europe/Paris",
+  "description": [
+    "Fenetre volontairement large : elle couvre le lundi entier, pas seulement",
+    "l'avant 7h. L'instance self-hosted ne passe qu'une fois par jour, vers midi",
+    "heure de Paris ; une fenetre qui ne recouvre pas l'heure du passage ne se",
+    "declenche jamais et tout reste en 'Awaiting Schedule' au dependency dashboard,",
+    "sans la moindre erreur nulle part.",
+    "",
+    "L'automerge natif de GitHub est desactive sur ce depot (allow_auto_merge",
+    "a false) : platformAutomerge=false demande donc a Renovate de fusionner",
+    "lui-meme, une fois la CI constatee verte."
+  ],
+  "schedule": ["on monday"],
+  "labels": ["dependencies"],
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
+  "configMigration": true,
+  "platformAutomerge": false,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["on the first day of the month"]
+  },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["dependencies", "security"],
+    "schedule": [],
+    "minimumReleaseAge": null,
+    "prConcurrentLimit": 0,
+    "prHourlyLimit": 0
+  },
+  "osvVulnerabilityAlerts": true,
+  "packageRules": [
+    {
+      "description": "Laisser une version se stabiliser avant de la proposer : une release publiee depuis moins de cinq jours peut encore etre depubliee ou corrigee. internalChecksFilter empeche Renovate de la proposer quand meme.",
+      "matchManagers": ["npm"],
+      "minimumReleaseAge": "5 days",
+      "internalChecksFilter": "strict"
+    },
+    {
+      "description": "Regrouper les mises a jour non-majeures des devDependencies",
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "devDependencies (non-major)"
+    },
+    {
+      "description": "Les patchs de devDependencies ne changent rien au code livre : fusion automatique une fois la CI verte, qui type-check, construit le serveur et passe les tests unitaires.",
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["patch", "pin", "digest"],
+      "automerge": true
+    },
+    {
+      "description": "Regrouper et fusionner automatiquement les actions GitHub non-majeures. matchDepTypes restreint le lot aux `uses:` : le manager github-actions extrait aussi les images des blocs `services:`.",
+      "matchManagers": ["github-actions"],
+      "matchDepTypes": ["action"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "github-actions",
+      "automerge": true
+    },
+    {
+      "description": "Une majeure reste seule, avec son changelog et sa relecture : c'est le seul type de mise a jour qui peut demander un changement de code.",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "labels": ["dependencies", "major"]
+    },
+    {
+      "description": "@types/node doit rester aligne sur engines.node (>=24)",
+      "matchPackageNames": ["@types/node"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    }
+  ]
+}
