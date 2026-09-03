@@ -1,5 +1,6 @@
 /**
- * Structural creation: the duplicate guard, and the multipart path it needs.
+ * Structural creation: the duplicate guard, the multipart path it needs, and
+ * the colour a new label is given.
  *
  * The guard is the only thing standing between an agent that retries and a
  * board whose name no longer resolves, so its edge cases are pinned here.
@@ -8,10 +9,11 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it, mock } from "node:test";
 import { resetConfigForTesting } from "../src/config.js";
+import { LABEL_COLORS } from "../src/constants.js";
 import { PlankaError } from "../src/errors.js";
 import { resetAuthForTesting } from "../src/services/auth.js";
 import { apiRequest } from "../src/services/client.js";
-import { refuseDuplicate } from "../src/tools/structure.js";
+import { pickLabelColor, refuseDuplicate } from "../src/tools/structure.js";
 
 describe("refuseDuplicate", () => {
   const boards = [
@@ -122,5 +124,38 @@ describe("client: multipart form bodies", () => {
   it("carries the auth header on a multipart request too", async () => {
     await apiRequest("/projects/42/boards", { method: "POST", form: { name: "X", position: 1 } });
     assert.equal(calls[0]?.headers["X-Api-Key"], "abcdef_api_key");
+  });
+});
+
+describe("pickLabelColor", () => {
+  it("takes the first palette colour on an empty board", () => {
+    assert.equal(pickLabelColor([]), LABEL_COLORS[0]);
+  });
+
+  it("skips the colours the board already spent", () => {
+    const used = [LABEL_COLORS[0], LABEL_COLORS[1]];
+    assert.equal(pickLabelColor(used), LABEL_COLORS[2]);
+  });
+
+  it("ignores a gap: a label may carry no colour at all", () => {
+    // `color` is nullable upstream, and a null must not be mistaken for a
+    // colour that is taken — otherwise the palette shrinks for no reason.
+    assert.equal(pickLabelColor([null, undefined, LABEL_COLORS[0]]), LABEL_COLORS[1]);
+  });
+
+  it("fills a hole left by a deleted label rather than jumping past it", () => {
+    const used = [LABEL_COLORS[0], LABEL_COLORS[2]];
+    assert.equal(pickLabelColor(used), LABEL_COLORS[1]);
+  });
+
+  it("still answers once all 42 colours are taken", () => {
+    // Nothing upstream caps the number of labels, so exhaustion is reachable
+    // and must not return undefined into a required field.
+    const color = pickLabelColor([...LABEL_COLORS]);
+    assert.ok(LABEL_COLORS.includes(color));
+  });
+
+  it("returns a colour Planka accepts, whatever the input", () => {
+    assert.ok(LABEL_COLORS.includes(pickLabelColor(["not-a-planka-colour"])));
   });
 });

@@ -33,6 +33,7 @@ import { registerAttributeTools } from "./tools/attributes.js";
 import { registerDiscoveryTools } from "./tools/discovery.js";
 import { registerLifecycleTools } from "./tools/lifecycle.js";
 import { registerReadTools } from "./tools/read.js";
+import { registerSharingTools } from "./tools/sharing.js";
 import { registerStructureTools } from "./tools/structure.js";
 import { runHttp } from "./transport/http.js";
 
@@ -43,6 +44,7 @@ function buildServer(): McpServer {
   registerLifecycleTools(server);
   registerAttributeTools(server);
   registerStructureTools(server);
+  registerSharingTools(server);
   return server;
 }
 

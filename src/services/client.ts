@@ -126,6 +126,13 @@ async function translateHttpError(response: Response, url: URL): Promise<PlankaE
         `The id may be stale — the item can have been deleted or moved since it was read. ` +
           `Call planka_describe_board or planka_search_cards to get a current id.`,
       );
+    case 409:
+      return new PlankaError(
+        `Planka reports a conflict (409).${detail}`,
+        409,
+        `The thing already exists — most often a user who is already a project manager or a ` +
+          `board member. Nothing was changed, and nothing needs to be.`,
+      );
     case 422:
       return new PlankaError(
         `Planka refused the change (422).${detail}`,

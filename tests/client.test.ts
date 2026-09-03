@@ -156,6 +156,11 @@ describe("error mapping", () => {
     { status: 401, body: { message: "Access token is missing" }, expect: ["PLANKA_TOKEN"] },
     { status: 403, expect: ["viewer on this board", "editor"] },
     { status: 404, expect: ["planka_describe_board", "/api/cards/42"] },
+    {
+      status: 409,
+      body: { code: "E_CONFLICT", message: "User already board member" },
+      expect: ["409", "already board member", "Nothing was changed"],
+    },
     { status: 422, expect: ["another board"] },
     { status: 429, expect: ["Retry"] },
     { status: 500, expect: ["HTTP 500", "Planka server logs"] },

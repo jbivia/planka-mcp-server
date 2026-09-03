@@ -174,7 +174,9 @@ Examples:
       description: `Put a label on a card, or take it off.
 
 Labels belong to a board — one that exists on another board cannot be used here, and this
-tool does not create labels. Call planka_describe_board to see what a board offers.
+tool only applies labels that already exist. Call planka_describe_board to see what a board
+offers, and planka_create_label if it offers nothing (a board created through the API starts
+with no label at all).
 
 Returns: confirmation naming the label and the card.
 

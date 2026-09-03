@@ -359,3 +359,41 @@ cette structure mais n'en supprime aucune.
 - **Le créateur d'un board en devient automatiquement membre `editor`**, via un
   `boardMembership` créé en même temps. Aucun appel supplémentaire n'est nécessaire pour
   pouvoir s'assigner ses propres cartes.
+- **Un board créé par l'API n'a aucun label.** Vérifié : `planka_describe_board` sur un board
+  fraîchement créé rend « _No labels._ ». L'interface Planka, elle, en pose une série à la
+  création — d'où l'illusion que le board en a toujours. `POST /boards/{boardId}/labels` exige
+  `color` **et** `position` ; `name` est facultatif (un label peut n'être qu'une couleur).
+  Les 42 noms de couleurs sont repris dans `constants.ts`, vérifiés un à un contre l'enum du
+  swagger de l'instance.
+
+---
+
+## 8. Partage : deux leviers asymétriques
+
+Relevé en montant les cas de test sur l'instance (Planka 2.2.1), puis mis en œuvre par
+`planka_share_project`. Rien de tout ceci n'est déductible du swagger seul.
+
+- **`type` est un champ de création uniquement.** Il est exigé par `POST /projects`
+  (`private` | `shared`), mais il n'apparaît **pas** dans le schéma `Project` renvoyé en
+  lecture, et `PATCH /projects/{id}` ne l'accepte pas. La visibilité d'un projet est donc
+  figée à sa création. Le seul indice a posteriori est `ownerProjectManagerId` : non nul sur
+  un projet `private`, nul sur un `shared`.
+- **`POST /projects/{projectId}/project-managers`** (`{ userId }`) échoue en
+  `403 {"code":"E_FORBIDDEN","message":"Not enough rights"}` sur un projet `private`, même
+  appelé par son unique chef de projet. Un projet personnel garde un seul manager à vie.
+  Sur un projet `shared`, le même appel passe (200) — un compte de rôle `projectOwner`
+  suffit, l'admin n'est pas requis.
+- **`POST /boards/{boardId}/board-memberships`** (`{ userId, role, canComment? }`) passe en
+  revanche sur **les deux** types de projet. C'est le seul mécanisme de partage universel,
+  et donc le défaut de l'outil. `canComment` n'est lu que pour un `viewer`.
+- **Les deux routes répondent `409`** quand l'accès existe déjà, avec un message exploitable
+  (`"User already project manager"`, `"User already board member"`). Le client HTTP traduit
+  ce code, et l'outil l'absorbe : partager deux fois est un no-op, pas une erreur.
+- **Un compte `projectOwner` peut créer un projet `shared`.** La restriction supposée
+  « shared réservé aux admins » n'existe pas ; ce que le rôle admin change, c'est la
+  *visibilité* — `GET /projects` renvoie « managed projects, membership projects, and shared
+  projects (for admins) », donc un projet personnel d'un autre utilisateur reste invisible,
+  y compris pour un administrateur.
+- **`GET /users` exige `admin` ou `projectOwner`** ; `GET /users/{id}` non, mais il masque
+  `email` (champ privé). D'où la résolution en deux temps dans `services/users.ts` : un
+  identifiant est lu directement, un nom passe par le listing.

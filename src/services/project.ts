@@ -183,6 +183,7 @@ export function projectBoard(board: PlankaBoard, included: PlankaIncluded | unde
     }),
     cards: cardSummaries,
     rawCards: visibleCards,
+    rawLabels: included?.labels ?? [],
     fetchedAt: Date.now(),
   };
 }
