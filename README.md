@@ -1,7 +1,7 @@
 # planka-mcp-server
 
 Serveur MCP pour une instance [Planka](https://planka.app) 2.x auto-hébergée. Il expose
-13 outils qui couvrent le cycle de vie complet d'un ticket — découvrir les tableaux, créer
+16 outils qui couvrent le cycle de vie complet d'un ticket — découvrir les tableaux, créer
 une carte, la déplacer de colonne en colonne, l'assigner, l'étiqueter, gérer ses tâches et
 ses commentaires, l'archiver ou la supprimer.
 
@@ -163,6 +163,9 @@ npx @modelcontextprotocol/inspector --cli node dist/index.js -e PLANKA_BASE_URL=
 | `planka_set_card_label` | oui | Ajouter / retirer un label |
 | `planka_add_comment` | oui | Commenter |
 | `planka_manage_card_tasks` | oui | Ajouter, cocher, décocher ou supprimer une tâche |
+| `planka_create_project` | oui | Créer un projet |
+| `planka_create_board` | oui | Créer un tableau, avec ses colonnes si on veut |
+| `planka_create_list` | oui | Ajouter une colonne à un tableau |
 
 ### Déplacer une carte
 
@@ -183,6 +186,22 @@ Le calcul se fait sur les positions réelles des voisines lues dans le cache : m
 tête pour passer devant, un pas au-delà de la queue pour passer derrière, moyenne des deux
 voisines pour s'intercaler. La réponse confirme le mouvement en clair — liste d'origine,
 liste cible, rang final, taille de la liste — pour éviter une relecture.
+
+### Créer une structure
+
+Trois outils créent projets, tableaux et listes. Le cas courant tient en un appel :
+
+```jsonc
+{ "project": "Infrastructure", "name": "Roadmap",
+  "lists": ["Backlog", "En cours", "Terminé"] }
+```
+
+Sans `lists`, le tableau n'a que les listes système `archive` et `trash` de Planka : aucune
+colonne, donc `planka_create_card` y échouerait. La réponse le dit explicitement plutôt que
+de laisser l'agent le découvrir.
+
+`POST /projects/{id}/boards` est le seul endpoint de l'API en `multipart/form-data` — il
+sert aussi à l'import Trello — d'où le mode formulaire du client HTTP.
 
 ### Économie de contexte
 
@@ -221,8 +240,12 @@ Use the exact name, or the id of the one you mean.
   (`prevListId`), l'archivage est donc réversible depuis l'interface.
 - Les listes système (`archive`, `trash`) ne sont pas proposées comme cibles de
   `planka_move_card` : un agent ne doit pas archiver une carte en croyant la classer.
-- Le serveur ne crée ni ne supprime de projet, de tableau, de liste ou de label. Ces
-  opérations structurelles restent manuelles.
+- Le serveur crée projets, tableaux et listes, mais n'en supprime **aucun** : une
+  structure créée par erreur se nettoie dans l'interface Planka. Les trois outils de
+  création refusent un nom déjà pris et nomment l'existant — Planka accepterait deux
+  tableaux « Roadmap » dans un projet, ce qui rendrait les deux inatteignables par nom.
+- Le serveur ne crée pas de label. Un agent qui en crée à la volée transforme une
+  taxonomie en broussaille en quelques sessions.
 
 ---
 
@@ -247,7 +270,7 @@ src/
 │   ├── card.ts           localisation d'une carte, avec ou sans tableau
 │   └── format.ts         toolSuccess/toolFailure, pagination, markdown
 ├── schemas/common.ts     shapes Zod partagées
-└── tools/                discovery, read, lifecycle, attributes
+└── tools/                discovery, read, lifecycle, attributes, structure
 ```
 
 Points de conception notables :

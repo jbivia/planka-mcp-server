@@ -60,6 +60,9 @@ export function projectProjects(
     boards: sortByPosition(boards.filter((board) => board.projectId === project.id)).map((board) => ({
       id: board.id,
       name: board.name,
+      ...(board.position !== undefined && board.position !== null
+        ? { position: board.position }
+        : {}),
     })),
   }));
 }

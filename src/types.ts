@@ -177,6 +177,8 @@ export interface PlankaUser {
 export interface BoardRef {
   id: string;
   name: string;
+  /** Ordre dans le projet ; sert a placer un nouveau tableau en fin de liste. */
+  position?: number;
 }
 
 export interface ProjectSummary {
