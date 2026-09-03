@@ -162,6 +162,12 @@ export interface PlankaBoardMembership {
   canComment?: boolean | null;
 }
 
+export interface PlankaProjectManager {
+  id: string;
+  projectId: string;
+  userId: string;
+}
+
 export interface PlankaUser {
   id: string;
   name: string;
@@ -207,6 +213,20 @@ export interface MemberSummary {
   name: string;
   username?: string;
   role?: "editor" | "viewer";
+}
+
+/**
+ * A user of the instance, as opposed to a member of one board.
+ *
+ * `GET /users/{id}` hides `email` (Planka marks it a private field), so a user
+ * resolved by id carries less than one resolved from the listing — hence both
+ * being optional.
+ */
+export interface UserSummary {
+  id: string;
+  name: string;
+  username?: string;
+  email?: string;
 }
 
 export interface CardSummary {

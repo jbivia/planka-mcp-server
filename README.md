@@ -166,6 +166,7 @@ npx @modelcontextprotocol/inspector --cli node dist/index.js -e PLANKA_BASE_URL=
 | `planka_create_project` | oui | Créer un projet |
 | `planka_create_board` | oui | Créer un tableau, avec ses colonnes si on veut |
 | `planka_create_list` | oui | Ajouter une colonne à un tableau |
+| `planka_share_project` | oui | Donner à un autre utilisateur l'accès à un projet ou à ses tableaux |
 
 ### Déplacer une carte
 
@@ -202,6 +203,50 @@ de laisser l'agent le découvrir.
 
 `POST /projects/{id}/boards` est le seul endpoint de l'API en `multipart/form-data` — il
 sert aussi à l'import Trello — d'où le mode formulaire du client HTTP.
+
+### Partager ce que le serveur crée
+
+Si le serveur tourne sous son propre compte Planka — un compte `claude` distinct du vôtre —
+tout ce qu'il crée n'appartient qu'à lui : `POST /projects` fait de l'appelant l'unique chef
+de projet, `POST /projects/{id}/boards` l'unique membre du tableau. Vous ne voyez rien depuis
+votre compte, même administrateur.
+
+`planka_share_project` corrige ça. Planka offre deux leviers **qui ne se valent pas** :
+
+| `role` | Route | Donne | Marche sur un projet perso ? |
+|---|---|---|---|
+| `editor` (défaut) | `POST /boards/{id}/board-memberships` | Les tableaux du projet, en écriture | **oui** |
+| `viewer` | idem, `role: viewer` | Les mêmes en lecture seule (`can_comment` pour autoriser les commentaires) | **oui** |
+| `manager` | `POST /projects/{id}/project-managers` | Le projet entier, tableaux présents et futurs | **non — 403** |
+
+Un projet créé avec `visibility: "private"` est un projet *personnel* : Planka lui interdit
+un second chef de projet, définitivement. Vérifié sur 2.2.1, le refus est un
+`403 "Not enough rights"` que l'outil réécrit en nommant les deux issues. D'où le défaut
+`editor` : le partage par tableau, lui, fonctionne partout, y compris sur les projets
+personnels déjà créés.
+
+```jsonc
+// tout le projet, en écriture
+{ "project": "Infrastructure", "user": "jerome" }
+// un seul tableau, en lecture
+{ "project": "Infrastructure", "user": "jerome", "role": "viewer", "boards": ["Roadmap"] }
+```
+
+Deux conséquences à connaître :
+
+- **Chef de projet ≠ assignable.** Seuls les membres d'un tableau peuvent recevoir une carte.
+  Quelqu'un qui doit prendre des cartes a besoin d'un partage `editor`, même s'il est déjà
+  manager.
+- **`visibility` ne se change pas après coup.** Le champ `type` n'est ni renvoyé en lecture
+  ni accepté par `PATCH /projects/{id}`. Pour qu'un projet soit administrable à plusieurs, il
+  faut le créer en `shared` dès le départ.
+
+Résoudre un destinataire par nom, pseudo ou email passe par `GET /users`, qui exige le rôle
+`admin` ou `projectOwner`. Un compte qui ne l'a pas peut quand même partager en passant
+l'identifiant Planka de la personne : il est lu directement, sans le listing.
+
+L'appel est idempotent : un `409` (« déjà membre ») est rapporté comme tel, pas comme une
+erreur.
 
 ### Économie de contexte
 
@@ -244,6 +289,8 @@ Use the exact name, or the id of the one you mean.
   structure créée par erreur se nettoie dans l'interface Planka. Les trois outils de
   création refusent un nom déjà pris et nomment l'existant — Planka accepterait deux
   tableaux « Roadmap » dans un projet, ce qui rendrait les deux inatteignables par nom.
+- `planka_share_project` n'enlève aucun accès : il ne sait qu'ajouter. Retirer un membre ou
+  un chef de projet se fait dans l'interface Planka.
 - Le serveur ne crée pas de label. Un agent qui en crée à la volée transforme une
   taxonomie en broussaille en quelques sessions.
 

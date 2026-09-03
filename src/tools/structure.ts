@@ -68,8 +68,10 @@ const createProjectShape = {
     .enum(["private", "shared"])
     .default("private")
     .describe(
-      "`private` (default) — only members you add can see it. `shared` — visible to the " +
-        "whole Planka instance.",
+      "`private` (default) — a personal project: this account is its only manager, for life. " +
+        "`shared` — a team project, visible to the instance's admins and open to further " +
+        "managers. Only `shared` can later be handed to somebody else with planka_share_project; " +
+        "either way, individual boards can be shared.",
     ),
   response_format: responseFormatField,
 };
