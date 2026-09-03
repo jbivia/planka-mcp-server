@@ -343,10 +343,11 @@ en place pour le cas d'un board importé ou d'une version antérieure.
 
 ---
 
-## 7. Autres observations, hors périmètre des outils
+## 7. Création de structure
 
-Relevées en montant le projet de test ; elles n'affectent pas le serveur MCP, qui ne crée
-ni ne supprime de structure, mais elles évitent de retomber dessus.
+Relevées en montant le projet de test, puis mises en œuvre par les outils
+`planka_create_project`, `planka_create_board` et `planka_create_list`. Le serveur crée
+cette structure mais n'en supprime aucune.
 
 - **`POST /projects/{projectId}/boards` attend du `multipart/form-data`, pas du JSON.**
   C'est la seule route de création dans ce cas, parce qu'elle sert aussi à l'import Trello

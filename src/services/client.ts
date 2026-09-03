@@ -17,6 +17,14 @@ export interface RequestOptions {
   method?: "GET" | "POST" | "PATCH" | "DELETE";
   query?: Record<string, string | number | undefined>;
   body?: unknown;
+  /**
+   * Fields to send as `multipart/form-data` instead of JSON.
+   *
+   * Exactly one route needs this: `POST /projects/{id}/boards`, which is
+   * multipart because it doubles as the Trello import endpoint and can carry a
+   * file. Sending it JSON gets a 400. Mutually exclusive with `body`.
+   */
+  form?: Record<string, string | number>;
 }
 
 interface PlankaErrorBody {
@@ -138,20 +146,32 @@ async function translateHttpError(response: Response, url: URL): Promise<PlankaE
 
 async function performRequest(path: string, options: RequestOptions): Promise<Response> {
   const url = buildUrl(path, options.query);
-  const { method = "GET", body } = options;
+  const { method = "GET", body, form } = options;
 
   const send = async (): Promise<Response> => {
     const headers: Record<string, string> = {
       ...(await authHeaders()),
       Accept: "application/json",
     };
-    if (body !== undefined) headers["Content-Type"] = "application/json";
+
+    let payload: string | FormData | undefined;
+    if (form !== undefined) {
+      const data = new FormData();
+      for (const [key, value] of Object.entries(form)) data.append(key, String(value));
+      payload = data;
+      // Deliberately no Content-Type header: fetch derives it from the FormData
+      // and appends the multipart boundary. Setting it by hand omits the
+      // boundary and the server cannot parse the body.
+    } else if (body !== undefined) {
+      headers["Content-Type"] = "application/json";
+      payload = JSON.stringify(body);
+    }
 
     try {
       return await fetch(url, {
         method,
         headers,
-        body: body === undefined ? undefined : JSON.stringify(body),
+        body: payload,
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (error) {
