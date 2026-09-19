@@ -141,7 +141,7 @@ Examples:
                   .map(
                     (comment) =>
                       `- **${comment.author}**${comment.createdAt ? ` · ${formatDate(comment.createdAt)}` : ""}: ` +
-                      `${comment.text.replace(/\s+/g, " ").trim()}`,
+                      `${comment.text.replace(/\s+/g, " ").trim()} — id \`${comment.id}\``,
                   )
                   .join("\n"),
               )

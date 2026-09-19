@@ -197,6 +197,7 @@ traduire les `labelId`.
 | Ajouter un label | `POST /cards/{cardId}/card-labels` | `{ labelId }` |
 | Retirer un label | `DELETE /cards/{cardId}/card-labels/labelId:{labelId}` | — |
 | Commenter | `POST /cards/{cardId}/comments` | `{ text }` |
+| Supprimer un commentaire | `DELETE /comments/{id}` | — ; *« by the comment author (with comment permissions) or project manager »* → `{ item: Comment }` |
 | Créer une task list | `POST /cards/{cardId}/task-lists` | requis `position`, `name` ; optionnels `showOnFrontOfCard`, `hideCompletedTasks` |
 | Ajouter une tâche | `POST /task-lists/{taskListId}/tasks` | requis `position` ; `name` *« required if linkedCardId is not provided »* ; optionnels `linkedCardId`, `isCompleted` |
 | Cocher / décocher | `PATCH /tasks/{id}` | `{ isCompleted: true \| false }` ; aussi `name`, `position`, `taskListId`, `assigneeUserId` |

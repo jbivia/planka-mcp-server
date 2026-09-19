@@ -1,7 +1,7 @@
 # planka-mcp-server
 
 Serveur MCP pour une instance [Planka](https://planka.app) 2.x auto-hébergée. Il expose
-16 outils qui couvrent le cycle de vie complet d'un ticket — découvrir les tableaux, créer
+19 outils qui couvrent le cycle de vie complet d'un ticket — découvrir les tableaux, créer
 une carte, la déplacer de colonne en colonne, l'assigner, l'étiqueter, gérer ses tâches et
 ses commentaires, l'archiver ou la supprimer.
 
@@ -162,6 +162,7 @@ npx @modelcontextprotocol/inspector --cli node dist/index.js -e PLANKA_BASE_URL=
 | `planka_assign_card_member` | oui | Assigner / désassigner un membre |
 | `planka_set_card_label` | oui | Ajouter / retirer un label |
 | `planka_add_comment` | oui | Commenter |
+| `planka_delete_comment` | **destructif** | Supprimer un commentaire, désigné par son identifiant ou son texte |
 | `planka_manage_card_tasks` | oui | Ajouter, cocher, décocher ou supprimer une tâche |
 | `planka_create_project` | oui | Créer un projet |
 | `planka_create_board` | oui | Créer un tableau, avec ses colonnes si on veut |
@@ -297,6 +298,10 @@ Use the exact name, or the id of the one you mean.
 
 - `planka_delete_card` est annoté `destructiveHint: true` et exige `confirm_name`, le titre
   exact de la carte recopié. La carte est lue avant, ce qui valide aussi l'identifiant.
+- `planka_delete_comment` est lui aussi `destructiveHint: true`. Le commentaire est cherché
+  sur la carte désignée avant toute suppression : un identifiant venu d'une autre carte, ou
+  un texte partagé par deux commentaires, échoue sans rien effacer. Planka ne laisse
+  supprimer un commentaire qu'à son auteur ou à un chef du projet.
 - `planka_archive_card` est préféré partout : Planka retient la liste d'origine
   (`prevListId`), l'archivage est donc réversible depuis l'interface.
 - Les listes système (`archive`, `trash`) ne sont pas proposées comme cibles de
