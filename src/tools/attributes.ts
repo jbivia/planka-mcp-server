@@ -3,7 +3,9 @@
  *
  * Add/remove pairs are single tools with an `action`, rather than eight
  * near-identical tools — the argument list is the same either way and the
- * agent picks a direction, not a different endpoint.
+ * agent picks a direction, not a different endpoint. Deleting a comment is the
+ * exception: it destroys what someone wrote, and `destructiveHint` is set per
+ * tool, so it cannot ride along as an `action` of planka_add_comment.
  *
  * Tasks are the part of Planka 2.x that differs most from 1.x: a card owns
  * task *lists*, and tasks live inside those. A card created through the API has
@@ -17,11 +19,19 @@ import { boardField, cardField, projectField } from "../schemas/common.js";
 import { invalidateBoard } from "../services/board-cache.js";
 import { locateCard } from "../services/card.js";
 import { apiRequest } from "../services/client.js";
-import { toolFailure, toolSuccess } from "../services/format.js";
+import { excerpt, toolFailure, toolSuccess } from "../services/format.js";
 import { appendPosition } from "../services/position.js";
-import { projectTasks } from "../services/project.js";
+import { projectComments, projectTasks } from "../services/project.js";
 import { resolveLabel, resolveMember } from "../services/resolve.js";
-import type { ItemResponse, PlankaComment, PlankaIncluded, PlankaTask, PlankaTaskList } from "../types.js";
+import type {
+  CommentSummary,
+  ItemResponse,
+  ItemsResponse,
+  PlankaComment,
+  PlankaIncluded,
+  PlankaTask,
+  PlankaTaskList,
+} from "../types.js";
 
 /** Name given to the task list created for a card that has none yet. */
 const DEFAULT_TASK_LIST_NAME = "Tasks";
@@ -72,6 +82,109 @@ const addCommentShape = {
   text: z.string().min(1).describe("Comment body, in Markdown."),
 };
 type AddCommentArgs = z.infer<z.ZodObject<typeof addCommentShape>>;
+
+/* -------------------------------------------------------------------------- */
+/* planka_delete_comment                                                       */
+/* -------------------------------------------------------------------------- */
+
+const deleteCommentShape = {
+  ...cardLocatorShape,
+  comment: z
+    .string()
+    .min(1)
+    .describe(
+      "The comment to delete: its id, which planka_get_card lists next to each comment, or " +
+        'its full text. Example: "1357158568008091264".',
+    ),
+};
+type DeleteCommentArgs = z.infer<z.ZodObject<typeof deleteCommentShape>>;
+
+/** A comment body as planka_get_card prints it: one line, so a copied text still matches. */
+function normalizeComment(text: string): string {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/** How a comment is named in errors: author, opening words and the id to pass instead. */
+function describeComment(comment: CommentSummary): string {
+  return `${comment.author}: "${excerpt(comment.text, 60) ?? ""}" (id ${comment.id})`;
+}
+
+/**
+ * Every comment on a card, newest first.
+ *
+ * Upstream pages by cursor (`beforeId`) and gives no total, so pages are walked
+ * until one comes back empty. A page ending on the cursor it was asked for means
+ * `beforeId` was ignored, and stops the walk instead of looping on page one.
+ */
+async function readAllComments(cardId: string): Promise<CommentSummary[]> {
+  const comments: CommentSummary[] = [];
+  let beforeId: string | undefined;
+  for (;;) {
+    const page = await apiRequest<ItemsResponse<PlankaComment, PlankaIncluded>>(
+      `/cards/${cardId}/comments`,
+      { query: { beforeId } },
+    );
+    const items = page.items ?? [];
+    const last = items.at(-1)?.id;
+    if (!last || last === beforeId) return comments;
+    comments.push(...projectComments(items, page.included));
+    beforeId = last;
+  }
+}
+
+/**
+ * Find the one comment `reference` designates on a card and delete it.
+ *
+ * Exported for the tests. The lookup comes first so that an id from another
+ * card, or a text matching two comments, fails before anything is destroyed.
+ */
+export async function deleteComment(
+  cardId: string,
+  cardName: string,
+  reference: string,
+): Promise<CommentSummary> {
+  const comments = await readAllComments(cardId);
+  const needle = normalizeComment(reference);
+  const hits = comments.filter(
+    (comment) => comment.id === reference.trim() || normalizeComment(comment.text) === needle,
+  );
+
+  if (hits.length === 0) {
+    throw new PlankaError(
+      `Comment "${excerpt(reference, 60)}" not found on "${cardName}".`,
+      undefined,
+      comments.length === 0
+        ? `This card has no comments.`
+        : `Its comments are: ${comments.slice(0, 10).map(describeComment).join("; ")}` +
+            `${comments.length > 10 ? ` (+${comments.length - 10} more)` : ""}.`,
+    );
+  }
+  if (hits.length > 1) {
+    throw new PlankaError(
+      `Comment "${excerpt(reference, 60)}" matches ${hits.length} comments on "${cardName}".`,
+      undefined,
+      `Pass the id of the one to delete: ${hits.map(describeComment).join("; ")}.`,
+    );
+  }
+
+  const comment = hits[0] as CommentSummary;
+  try {
+    await apiRequest<ItemResponse<PlankaComment>>(`/comments/${comment.id}`, { method: "DELETE" });
+  } catch (error) {
+    // The generic 403 hint blames a viewer membership, which is wrong here:
+    // an editor is refused too when the comment is someone else's.
+    if (error instanceof PlankaError && error.status === 403) {
+      throw new PlankaError(
+        `Not allowed to delete ${comment.author}'s comment on "${cardName}" (403).`,
+        403,
+        `Planka lets a comment be deleted only by its author, while they may still comment on ` +
+          `this board, or by a manager of the project. Ask one of them to remove it.`,
+      );
+    }
+    throw error;
+  }
+  return comment;
+}
 
 /* -------------------------------------------------------------------------- */
 /* planka_manage_card_tasks                                                    */
@@ -256,6 +369,51 @@ Examples:
           card_id: located.card.id,
           comment_id: response.item?.id,
         });
+      } catch (error) {
+        return toolFailure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "planka_delete_comment",
+    {
+      title: "Delete a Planka card comment",
+      description: `Delete one comment from a card. This cannot be undone.
+
+\`comment\` is the comment's id, which planka_get_card lists next to each comment, or its
+full text (case and line breaks are ignored). The comment is looked up on the card first,
+so an id from another card, or a text shared by several comments, fails before anything
+is deleted — and the failure lists the card's comments with their ids.
+
+Planka lets a comment be deleted by its author or by a manager of the project.
+
+Returns: confirmation naming the comment's author and the card.
+
+Examples:
+  - Use when: "remove the comment I just posted on the login bug" -> card="Fix the login redirect", comment="1357158568008091264"
+  - Don't use when: the whole card should go (use planka_delete_card)`,
+      inputSchema: deleteCommentShape,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        // A second call finds nothing to delete and fails, so this is not idempotent.
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async (args: DeleteCommentArgs) => {
+      try {
+        const located = await locateCard(args.card, args.board, args.project);
+        const comment = await deleteComment(located.card.id, located.card.name, args.comment);
+        // The snapshot carries the card's comment count.
+        invalidateBoard(located.snapshot.id);
+
+        return toolSuccess(
+          `Deleted ${comment.author}'s comment on "${located.card.name}": ` +
+            `"${excerpt(comment.text, 80) ?? ""}". This is permanent.`,
+          { card_id: located.card.id, comment_id: comment.id, deleted: true },
+        );
       } catch (error) {
         return toolFailure(error);
       }
