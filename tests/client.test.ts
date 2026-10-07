@@ -79,6 +79,19 @@ describe("config", () => {
     assert.equal(loadConfig().apiUrl, "https://planka.example.com/api");
   });
 
+  it("reads extra HTTP hosts as a comma-separated list", () => {
+    assert.deepEqual(loadConfig().httpAllowedHosts, []);
+    setEnv({ PLANKA_HTTP_ALLOWED_HOSTS: " mcp-planka.example.com, ,mcp.example.org:443 " });
+    assert.deepEqual(loadConfig().httpAllowedHosts, ["mcp-planka.example.com", "mcp.example.org:443"]);
+    setEnv({ PLANKA_HTTP_ALLOWED_HOSTS: undefined });
+  });
+
+  it("refuses a port no socket can bind", () => {
+    setEnv({ PLANKA_HTTP_PORT: "70000" });
+    assert.throws(() => loadConfig(), /PLANKA_HTTP_PORT must be a positive integer up to 65535/);
+    setEnv({ PLANKA_HTTP_PORT: undefined });
+  });
+
   it("refuses a half-finished credential pair", () => {
     setEnv({ PLANKA_TOKEN: undefined, PLANKA_EMAIL: "jane@example.com", PLANKA_PASSWORD: undefined });
     assert.throws(() => loadConfig(), /No Planka credentials configured/);

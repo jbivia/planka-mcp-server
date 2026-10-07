@@ -64,7 +64,8 @@ erreur — avec un message qui dit quoi corriger — si l'URL, le jeton ou les d
 | `PLANKA_HTTP_PORT` | non | Port HTTP, défaut `3000`. |
 | `PLANKA_HTTP_PATH` | non | Chemin de l'endpoint, défaut `/mcp`. |
 | `PLANKA_HTTP_TOKEN` | non | Si défini, les appels HTTP doivent porter ce jeton en bearer. |
-| `PLANKA_CACHE_TTL_MS` | non | Durée du cache de structure, défaut `60000`. |
+| `PLANKA_HTTP_ALLOWED_HOSTS` | non | En-têtes `Host` acceptés en plus de l'adresse d'écoute, séparés par des virgules — le nom public derrière un reverse proxy. |
+| `PLANKA_CACHE_TTL_MS` | non | Durée du cache de structure, défaut `60000`. Voir « Textes longs ». |
 
 \* Soit `PLANKA_TOKEN`, soit le couple `PLANKA_EMAIL` + `PLANKA_PASSWORD`.
 
@@ -128,9 +129,16 @@ mcp-planka.example.com {
 Côté client, pointer sur `https://mcp-planka.example.com/mcp` avec
 `Authorization: Bearer un_secret_long`.
 
-La protection anti-DNS-rebinding du SDK est active : les en-têtes `Host` non attendus sont
-refusés. Si le proxy réécrit `Host` en un nom public, ajouter ce nom à `allowedHosts`
-dans [`src/transport/http.ts`](src/transport/http.ts).
+La protection anti-DNS-rebinding du SDK est active : un en-tête `Host` non attendu est
+refusé en `403`. Caddy, comme la plupart des proxys, transmet le `Host` public tel quel ;
+il faut donc le déclarer :
+
+```bash
+PLANKA_HTTP_ALLOWED_HOSTS=mcp-planka.example.com
+```
+
+Le serveur affiche au démarrage la liste des `Host` qu'il accepte. Une session restée
+30 minutes sans requête est fermée ; le client en ouvre une nouvelle par un `initialize`.
 
 ### Inspecteur MCP
 
@@ -155,7 +163,7 @@ npx @modelcontextprotocol/inspector --cli node dist/index.js -e PLANKA_BASE_URL=
 | `planka_search_cards` | non | Filtrer les cartes par tableau, liste, label, assigné, échéance, texte |
 | `planka_get_card` | non | Une carte en détail : description, tâches, commentaires |
 | `planka_create_card` | oui | Créer une carte dans une liste |
-| `planka_update_card` | oui | Titre, description, échéance |
+| `planka_update_card` | oui | Titre, description (remplacer, ajouter à la fin, corriger un passage), échéance |
 | `planka_move_card` | oui | **Déplacer une carte** vers une autre liste, à une position choisie |
 | `planka_archive_card` | oui | Archiver (réversible) |
 | `planka_delete_card` | **destructif** | Supprimer définitivement, avec confirmation par titre |
@@ -265,6 +273,55 @@ l'identifiant Planka de la personne : il est lu directement, sans le listing.
 L'appel est idempotent : un `409` (« déjà membre ») est rapporté comme tel, pas comme une
 erreur.
 
+### Textes longs
+
+Une description de carte peut atteindre 1 048 576 caractères (limite de Planka) : un
+chapitre, une spécification, un runbook. Écrire un tel texte était lent pour deux raisons,
+toutes deux corrigées.
+
+**L'agent devait renvoyer tout le texte à chaque modification.** C'est la partie la plus
+lente d'un appel d'outil : chaque caractère repasse par la sortie du modèle. Ajouter un
+paragraphe à un chapitre de 40 000 caractères coûtait ~10 000 jetons générés, plusieurs
+minutes. `planka_update_card` propose désormais trois façons de modifier la description,
+une par appel :
+
+```jsonc
+{ "card": "Chapitre 3", "description": "…" }                     // remplace tout le texte
+{ "card": "Chapitre 3", "append_description": "## Scène 2\n\n…" } // ajoute un paragraphe à la fin
+{ "card": "Chapitre 3",
+  "description_edits": [{ "find": "Marie regardait", "replace": "Jeanne observait" }] }
+```
+
+`append_description` et `description_edits` n'envoient que ce qui change : le serveur relit
+la carte (pas le tableau) et applique la modification au texte stocké. Chaque `find` doit
+apparaître exactement une fois ; sinon rien n'est envoyé et l'erreur dit pourquoi.
+
+**Chaque écriture relisait deux fois le tableau entier.** `GET /boards/{id}` renvoie toutes
+les cartes *avec leur description complète* : sur un tableau qui contient un livre, il pèse le
+livre. Le serveur le relisait après chaque écriture pour confirmer le résultat, et une seconde
+fois quand le cache avait expiré entre deux appels — ce qui est la règle quand l'agent met
+plusieurs minutes à rédiger. Désormais une écriture de carte reporte dans le cache la carte
+que Planka renvoie, sans relire le tableau.
+
+Mesuré sur un tableau de 30 chapitres de 40 000 caractères (faux Planka, mêmes routes) :
+
+| Opération | Avant | Après |
+|---|---|---|
+| Réécrire un chapitre, cache froid | 4 requêtes, 2,4 Mo reçus | 3 requêtes, 1,2 Mo |
+| Réécrire un chapitre, cache chaud | 2 requêtes, 1,2 Mo | **1 requête, 40 Ko** |
+| Ajouter un paragraphe de 2 000 caractères | — (tout renvoyer) | 2 requêtes, 82 Ko ; ~500 jetons générés au lieu de ~10 000 |
+| Déplacer une carte | 2 requêtes, 1,2 Mo | 1 requête, 42 Ko |
+
+Pour un usage d'écriture à un seul rédacteur, allonger le cache évite aussi la relecture du
+tableau entre deux appels espacés : `PLANKA_CACHE_TTL_MS=600000` (10 minutes). Une carte ou
+une liste créée entre-temps dans l'interface reste trouvable : un nom inconnu du cache
+déclenche une relecture du tableau avant d'échouer.
+
+**À la lecture**, `planka_get_card` ne tronque plus une longue description : elle est servie
+par pages, la réponse se termine par l'offset de la suite (`description_offset`), et rien
+n'est perdu. Auparavant la fin d'un chapitre au-delà de ~25 000 caractères était coupée
+sans moyen de la lire — et un agent qui la réécrivait à partir de cette lecture la perdait.
+
 ### Économie de contexte
 
 Les réponses Planka contiennent de gros blocs `included` : des tables de jointure brutes
@@ -274,7 +331,7 @@ qu'il faudrait recoller soi-même. Rien n'est relayé tel quel.
   **noms**, pas en identifiants.
 - `planka_search_cards` pagine (`limit` / `offset`, défaut 25) et rend une ligne par carte.
 - `planka_get_card` a deux niveaux : `summary` (l'état de la carte) et `full` (description,
-  toutes les tâches, les commentaires récents).
+  toutes les tâches, les commentaires récents). Une longue description est paginée.
 - Toutes les lectures acceptent `response_format: "markdown" | "json"`.
 - Un plafond dur de 25 000 caractères tronque avec une note plutôt que de saturer le contexte.
 
@@ -333,11 +390,12 @@ src/
 ├── services/
 │   ├── client.ts         client HTTP unique, mapping d'erreurs centralisé
 │   ├── auth.ts           clé d'API vs JWT, échange identifiants, renouvellement
-│   ├── board-cache.ts    snapshot de tableau avec TTL et invalidation
+│   ├── board-cache.ts    snapshot de tableau : TTL, écritures reportées, lectures partagées
 │   ├── resolve.ts        résolution nom/identifiant, erreurs avec candidats
 │   ├── position.ts       arithmétique de position (top/bottom/before/after/index)
 │   ├── project.ts        projections : included -> formes exposées
 │   ├── card.ts           localisation d'une carte, avec ou sans tableau
+│   ├── text.ts           longues descriptions : ajout, corrections, pages
 │   └── format.ts         toolSuccess/toolFailure, pagination, markdown
 ├── schemas/common.ts     shapes Zod partagées
 └── tools/                discovery, read, lifecycle, attributes, structure
@@ -349,8 +407,15 @@ Points de conception notables :
   et tâches d'un coup. Ce snapshot alimente la résolution de noms, la description, la
   recherche et le calcul de position — déplacer une carte coûte 1 GET (souvent 0, en cache)
   + 1 PATCH, contre trois appels avec l'API brute.
-- **Invalidation sur succès seulement.** Une écriture qui échoue laisse le cache intact : la
-  photo du tableau est toujours juste, la jeter ne coûterait qu'un rechargement.
+- **Une écriture de carte ne relit jamais le tableau.** Planka renvoie la carte stockée ; elle
+  est reportée dans le snapshot en cache (création, modification, déplacement, archivage,
+  suppression). Les autres écritures (labels, membres, tâches, commentaires) invalident le
+  tableau, relu au prochain besoin. Une écriture qui échoue laisse le cache intact.
+- **Lectures partagées et parallèles.** Deux appels qui veulent le même tableau au même
+  moment partagent une requête ; une recherche sans tableau lit jusqu'à 10 tableaux, 4 à la
+  fois. Une lecture en vol pendant une écriture n'est pas mise en cache.
+- **Une carte désignée par identifiant** est cherchée directement (`GET /cards/{id}` donne
+  son tableau), plutôt qu'en parcourant les tableaux un à un.
 - **Résolution stricte d'abord.** Égalité exacte, puis préfixe, puis sous-chaîne ; la
   première passe qui donne un seul résultat gagne. Avec des listes « Done » et « Not Done »,
   « Done » résout proprement au lieu d'être signalé ambigu.
@@ -368,8 +433,9 @@ npm test         # node:test, fetch mocké, aucun appel réseau
 npm run build
 ```
 
-Les tests couvrent le calcul de position, la résolution de noms, la projection des réponses
-et le mapping des erreurs HTTP.
+Les tests couvrent le calcul de position, la résolution de noms, la projection des réponses,
+le mapping des erreurs HTTP, le cache, et — de bout en bout via un client MCP et un faux
+Planka à état — les requêtes que chaque outil de carte envoie.
 
 ## Licence
 

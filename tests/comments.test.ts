@@ -60,12 +60,14 @@ afterEach(() => {
 
 describe("deleteComment", () => {
   it("deletes a comment designated by its id", async () => {
-    replies.push(page({ id: "101", text: "Deployed in 2.4.1." }), page(), json({ item: { id: "101" } }));
+    replies.push(page({ id: "101", text: "Deployed in 2.4.1." }), json({ item: { id: "101" } }));
 
     const deleted = await deleteComment("c1", "Fix the login redirect", "101");
 
     assert.equal(deleted.id, "101");
     assert.equal(deleted.author, "Jane Doe");
+    // An id is unique: the page holding it ends the walk, no empty page is read.
+    assert.equal(calls.length, 2);
     assert.equal(calls.at(-1)?.method, "DELETE");
     assert.match(String(calls.at(-1)?.url), /\/comments\/101$/);
   });
@@ -82,7 +84,6 @@ describe("deleteComment", () => {
     replies.push(
       page({ id: "103", text: "Newest" }, { id: "102", text: "Middle" }),
       page({ id: "101", text: "Oldest" }),
-      page(),
       json({ item: { id: "101" } }),
     );
 
@@ -90,17 +91,32 @@ describe("deleteComment", () => {
 
     assert.doesNotMatch(calls[0]?.url ?? "", /beforeId/);
     assert.match(calls[1]?.url ?? "", /beforeId=102$/);
+    assert.match(String(calls[2]?.url), /\/comments\/101$/);
+    assert.equal(calls.length, 3);
+  });
+
+  it("reads every page when matching by text, to rule out a second match", async () => {
+    replies.push(
+      page({ id: "103", text: "Newest" }, { id: "102", text: "Middle" }),
+      page({ id: "101", text: "Oldest" }),
+      page(),
+      json({ item: { id: "103" } }),
+    );
+
+    const deleted = await deleteComment("c1", "Fix the login redirect", "newest");
+
+    assert.equal(deleted.id, "103");
     assert.match(calls[2]?.url ?? "", /beforeId=101$/);
-    assert.match(String(calls[3]?.url), /\/comments\/101$/);
+    assert.match(String(calls[3]?.url), /\/comments\/103$/);
   });
 
   it("stops walking when the server ignores beforeId", async () => {
-    // Every request gets page one back; the walk must end, and the id still resolves.
+    // Every request gets page one back; the walk must end, and the text still resolves.
     replies.push(page({ id: "102", text: "A" }, { id: "101", text: "B" }));
     replies.push(page({ id: "102", text: "A" }, { id: "101", text: "B" }));
     replies.push(json({ item: { id: "102" } }));
 
-    const deleted = await deleteComment("c1", "Fix the login redirect", "102");
+    const deleted = await deleteComment("c1", "Fix the login redirect", "A");
     assert.equal(deleted.id, "102");
     assert.equal(calls.length, 3);
   });
@@ -143,7 +159,6 @@ describe("deleteComment", () => {
   it("turns the 403 into who may delete, not the viewer hint", async () => {
     replies.push(
       page({ id: "101", text: "Deployed in 2.4.1." }),
-      page(),
       json({ code: "E_FORBIDDEN", message: "Not enough rights" }, 403),
     );
 

@@ -291,5 +291,6 @@ export interface BoardSnapshot {
   rawCards: PlankaCard[];
   /** Same, for labels: `LabelSummary` drops `position`, which a new label needs. */
   rawLabels: PlankaLabel[];
+  /** When the board was read, on the cache's monotonic clock (`cacheClock`). */
   fetchedAt: number;
 }

@@ -184,7 +184,8 @@ export function projectBoard(board: PlankaBoard, included: PlankaIncluded | unde
     cards: cardSummaries,
     rawCards: visibleCards,
     rawLabels: included?.labels ?? [],
-    fetchedAt: Date.now(),
+    // Same clock as the board cache's `cacheClock`, which dates its entries with this.
+    fetchedAt: performance.now(),
   };
 }
 

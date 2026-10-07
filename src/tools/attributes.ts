@@ -15,7 +15,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { PlankaError, quoteList } from "../errors.js";
-import { boardField, cardField, projectField } from "../schemas/common.js";
+import { cardLocatorShape } from "../schemas/common.js";
 import { invalidateBoard } from "../services/board-cache.js";
 import { locateCard } from "../services/card.js";
 import { apiRequest } from "../services/client.js";
@@ -35,12 +35,6 @@ import type {
 
 /** Name given to the task list created for a card that has none yet. */
 const DEFAULT_TASK_LIST_NAME = "Tasks";
-
-const cardLocatorShape = {
-  card: cardField,
-  board: boardField.optional().describe("Board the card is on. Recommended, and required for duplicate titles."),
-  project: projectField,
-};
 
 /* -------------------------------------------------------------------------- */
 /* planka_assign_card_member                                                   */
@@ -113,10 +107,14 @@ function describeComment(comment: CommentSummary): string {
  * Every comment on a card, newest first.
  *
  * Upstream pages by cursor (`beforeId`) and gives no total, so pages are walked
- * until one comes back empty. A page ending on the cursor it was asked for means
+ * until one comes back empty, or until `enough` says the page just read holds
+ * what the caller wants. A page ending on the cursor it was asked for means
  * `beforeId` was ignored, and stops the walk instead of looping on page one.
  */
-async function readAllComments(cardId: string): Promise<CommentSummary[]> {
+async function readAllComments(
+  cardId: string,
+  enough: (page: readonly CommentSummary[]) => boolean = () => false,
+): Promise<CommentSummary[]> {
   const comments: CommentSummary[] = [];
   let beforeId: string | undefined;
   for (;;) {
@@ -127,7 +125,9 @@ async function readAllComments(cardId: string): Promise<CommentSummary[]> {
     const items = page.items ?? [];
     const last = items.at(-1)?.id;
     if (!last || last === beforeId) return comments;
-    comments.push(...projectComments(items, page.included));
+    const projected = projectComments(items, page.included);
+    comments.push(...projected);
+    if (enough(projected)) return comments;
     beforeId = last;
   }
 }
@@ -143,10 +143,13 @@ export async function deleteComment(
   cardName: string,
   reference: string,
 ): Promise<CommentSummary> {
-  const comments = await readAllComments(cardId);
+  // An id is unique, so the walk can stop on the page that holds it; a text
+  // has to be checked against every comment to rule out a second match.
+  const id = reference.trim();
+  const comments = await readAllComments(cardId, (page) => page.some((comment) => comment.id === id));
   const needle = normalizeComment(reference);
   const hits = comments.filter(
-    (comment) => comment.id === reference.trim() || normalizeComment(comment.text) === needle,
+    (comment) => comment.id === id || normalizeComment(comment.text) === needle,
   );
 
   if (hits.length === 0) {
@@ -224,6 +227,11 @@ async function readTaskState(cardId: string): Promise<{
     tasks: projectTasks(response.included),
     included: response.included,
   };
+}
+
+/** "3/7" — computed from the state already read, rather than reading the card again. */
+function progress(tasks: readonly { isCompleted: boolean }[]): string {
+  return `${tasks.filter((task) => task.isCompleted).length}/${tasks.length}`;
 }
 
 export function registerAttributeTools(server: McpServer): void {
@@ -483,12 +491,11 @@ Examples:
           });
           invalidateBoard(located.snapshot.id);
 
-          const after = await readTaskState(located.card.id);
-          const done = after.tasks.filter((task) => task.isCompleted).length;
-          return toolSuccess(
-            `Added task "${args.task}" to "${located.card.name}". Now ${done}/${after.tasks.length} done.`,
-            { card_id: located.card.id, progress: `${done}/${after.tasks.length}` },
-          );
+          const now = progress([...state.tasks, { isCompleted: false }]);
+          return toolSuccess(`Added task "${args.task}" to "${located.card.name}". Now ${now} done.`, {
+            card_id: located.card.id,
+            progress: now,
+          });
         }
 
         /* The three actions below all operate on an existing task. */
@@ -525,15 +532,21 @@ Examples:
         }
         invalidateBoard(located.snapshot.id);
 
-        const after = await readTaskState(located.card.id);
-        const done = after.tasks.filter((entry) => entry.isCompleted).length;
+        const now = progress(
+          args.action === "remove"
+            ? state.tasks.filter((entry) => entry.id !== task.id)
+            : state.tasks.map((entry) =>
+                entry.id === task.id ? { isCompleted: args.action === "complete" } : entry,
+              ),
+        );
         const verb =
           args.action === "remove" ? "Removed" : args.action === "complete" ? "Completed" : "Reopened";
 
-        return toolSuccess(
-          `${verb} task "${task.name}" on "${located.card.name}". Now ${done}/${after.tasks.length} done.`,
-          { card_id: located.card.id, task_id: task.id, progress: `${done}/${after.tasks.length}` },
-        );
+        return toolSuccess(`${verb} task "${task.name}" on "${located.card.name}". Now ${now} done.`, {
+          card_id: located.card.id,
+          task_id: task.id,
+          progress: now,
+        });
       } catch (error) {
         return toolFailure(error);
       }

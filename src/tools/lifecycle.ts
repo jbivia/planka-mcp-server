@@ -14,20 +14,21 @@ import { z } from "zod";
 import { PlankaError } from "../errors.js";
 import {
   boardField,
-  cardField,
+  cardLocatorShape,
   dueDateField,
   positionField,
   projectField,
   responseFormatField,
 } from "../schemas/common.js";
-import { getBoardSnapshot, invalidateBoard } from "../services/board-cache.js";
+import { forgetCard, invalidateBoard, storeCard } from "../services/board-cache.js";
 import { locateCard } from "../services/card.js";
 import { apiRequest } from "../services/client.js";
 import { lines, respond, toolFailure, toolSuccess } from "../services/format.js";
 import { resolvePosition, sortByPosition, type PositionRequest } from "../services/position.js";
 import { projectCardSummary } from "../services/project.js";
-import { resolveBoard, resolveCard, resolveList } from "../services/resolve.js";
-import type { BoardSnapshot, ItemResponse, PlankaCard } from "../types.js";
+import { resolveBoard, resolveList, resolveNamed, resolveOnBoard } from "../services/resolve.js";
+import { appendParagraph, applyEdits, checkDescriptionLength } from "../services/text.js";
+import type { BoardSnapshot, CardSummary, ItemResponse, ListSummary, PlankaCard } from "../types.js";
 import { renderCardLine } from "./discovery.js";
 
 /** The shape `positionField` validates into. */
@@ -37,15 +38,33 @@ type PositionInput = "top" | "bottom" | { before: string } | { after: string } |
  * Turn a placement intent into a resolved request.
  *
  * `before`/`after` name a neighbour card the same way every other argument
- * names things — so the neighbour is resolved against the board, and a typo in
- * it fails with the candidate list rather than silently appending.
+ * names things, resolved among the cards of the target list — so a typo, or a
+ * card that sits in another list, fails with the candidate list rather than
+ * silently appending.
  */
-function toPositionRequest(input: PositionInput, snapshot: BoardSnapshot): PositionRequest {
+function toPositionRequest(
+  input: PositionInput,
+  snapshot: BoardSnapshot,
+  list: ListSummary,
+  movingId?: string,
+): PositionRequest {
   if (input === "top") return { kind: "top" };
   if (input === "bottom") return { kind: "bottom" };
   if ("index" in input) return { kind: "index", index: input.index };
-  if ("before" in input) return { kind: "before", siblingId: resolveCard(snapshot, input.before).id };
-  return { kind: "after", siblingId: resolveCard(snapshot, input.after).id };
+
+  const neighbours = snapshot.cards.filter((card) => card.listId === list.id && card.id !== movingId);
+  const neighbour = resolveNamed(
+    neighbours,
+    "before" in input ? input.before : input.after,
+    "Card",
+    `in list "${list.name}"`,
+    `\`before\` and \`after\` name a card of the target list, other than the one being placed. ` +
+      `Use "top", "bottom" or {"index": n} otherwise.`,
+    10,
+  );
+  return "before" in input
+    ? { kind: "before", siblingId: neighbour.id }
+    : { kind: "after", siblingId: neighbour.id };
 }
 
 /** The cards currently in a list, in board order. */
@@ -53,23 +72,56 @@ function cardsInList(snapshot: BoardSnapshot, listId: string): PlankaCard[] {
   return sortByPosition(snapshot.rawCards.filter((card) => card.listId === listId));
 }
 
-/** Re-read the card after a write, so the reply describes what Planka stored. */
-async function summarize(cardId: string, boardId: string): Promise<string> {
-  const snapshot = await getBoardSnapshot(boardId, true);
-  const card = snapshot.cards.find((candidate) => candidate.id === cardId);
-  return card ? renderCardLine(card) : `- card id \`${cardId}\``;
+/**
+ * Fold the card a write returned into the board cache, and project it as
+ * Planka stored it.
+ *
+ * This replaces re-reading the whole board after every write — which carries
+ * every card's description, and so cost as much as the board's whole text to
+ * confirm a one-line change.
+ */
+function settle(snapshot: BoardSnapshot, stored: PlankaCard | undefined, before?: CardSummary): CardSummary | undefined {
+  if (!stored) {
+    invalidateBoard(snapshot.id);
+    return before;
+  }
+  const updated = storeCard(snapshot.id, stored);
+  return (
+    updated?.cards.find((card) => card.id === stored.id) ??
+    projectCardSummary(stored, {
+      boardName: snapshot.name,
+      listName: snapshot.lists.find((list) => list.id === stored.listId)?.name ?? "(unknown list)",
+      labels: before?.labels ?? [],
+      assignees: before?.assignees ?? [],
+    })
+  );
+}
+
+/** A card's description as Planka holds it right now, not as the board cache last saw it. */
+async function readDescription(cardId: string): Promise<string> {
+  const response = await apiRequest<ItemResponse<PlankaCard>>(`/cards/${cardId}`);
+  return response.item?.description ?? "";
 }
 
 /* -------------------------------------------------------------------------- */
 /* Shapes                                                                      */
 /* -------------------------------------------------------------------------- */
 
+/** Planka's own cap on a card title. */
+const cardNameField = z.string().min(1).max(1024);
+
 const createCardShape = {
   board: boardField,
   project: projectField,
   list: z.string().min(1).describe('List to create the card in, by name or id. Example: "Backlog".'),
-  name: z.string().min(1).describe('Card title. Example: "Fix the login redirect".'),
-  description: z.string().optional().describe("Card body, in Markdown."),
+  name: cardNameField.describe('Card title. Example: "Fix the login redirect".'),
+  description: z
+    .string()
+    .optional()
+    .describe(
+      "Card body, in Markdown. For a very long text, create the card with its first part and " +
+        "add the rest with planka_update_card's append_description.",
+    ),
   due_date: dueDateField.optional(),
   position: positionField,
   response_format: responseFormatField,
@@ -77,14 +129,46 @@ const createCardShape = {
 type CreateCardArgs = z.infer<z.ZodObject<typeof createCardShape>>;
 
 const updateCardShape = {
-  card: cardField,
-  board: boardField.optional().describe("Board the card is on. Recommended, and required for duplicate titles."),
-  project: projectField,
-  name: z.string().min(1).optional().describe("New title. Omit to leave it unchanged."),
-  description: z.string().optional().describe("New body, in Markdown. Pass an empty string to clear it."),
-  due_date: dueDateField.optional().describe(
-    'New due date, ISO 8601 UTC. Example: "2026-01-31T17:00:00.000Z". Pass null to clear it.',
-  ),
+  ...cardLocatorShape,
+  name: cardNameField.optional().describe("New title. Omit to leave it unchanged."),
+  description: z
+    .string()
+    .optional()
+    .describe(
+      "New body, in Markdown, replacing the whole current one. Pass an empty string to clear " +
+        "it. To change part of a long text, use append_description or description_edits " +
+        "instead: they do not need the whole text sent again.",
+    ),
+  append_description: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Text to add at the end of the current description, as a new paragraph. Only the new " +
+        "text is sent, however long the description already is — the way to write a long text " +
+        "over several calls.",
+    ),
+  description_edits: z
+    .array(
+      z.object({
+        find: z
+          .string()
+          .min(1)
+          .describe("Passage to replace, copied exactly from the current description. Must occur once."),
+        replace: z.string().describe("Text to put in its place. Empty to delete the passage."),
+      }),
+    )
+    .min(1)
+    .optional()
+    .describe(
+      "Search-and-replace edits on the current description, applied in order and all or " +
+        'nothing. Example: [{"find": "Marie regardait", "replace": "Marie observait"}].',
+    ),
+  due_date: dueDateField
+    .optional()
+    .describe(
+      'New due date, ISO 8601 UTC. Example: "2026-01-31T17:00:00.000Z". Use clear_due_date to remove it.',
+    ),
   clear_due_date: z.boolean().optional().describe("Set true to remove the due date entirely."),
   due_completed: z.boolean().optional().describe("Mark the due date as met (true) or not (false)."),
   response_format: responseFormatField,
@@ -92,24 +176,18 @@ const updateCardShape = {
 type UpdateCardArgs = z.infer<z.ZodObject<typeof updateCardShape>>;
 
 const moveCardShape = {
-  card: cardField,
+  ...cardLocatorShape,
   list: z.string().min(1).describe('Destination list, by name or id. Example: "En cours".'),
-  board: boardField.optional().describe("Board the card is on. Recommended, and required for duplicate titles."),
-  project: projectField,
   position: positionField,
   response_format: responseFormatField,
 };
 type MoveCardArgs = z.infer<z.ZodObject<typeof moveCardShape>>;
 
-const archiveCardShape = {
-  card: cardField,
-  board: boardField.optional().describe("Board the card is on. Recommended, and required for duplicate titles."),
-  project: projectField,
-};
+const archiveCardShape = cardLocatorShape;
 type ArchiveCardArgs = z.infer<z.ZodObject<typeof archiveCardShape>>;
 
 const deleteCardShape = {
-  card: cardField,
+  ...cardLocatorShape,
   confirm_name: z
     .string()
     .min(1)
@@ -117,10 +195,52 @@ const deleteCardShape = {
       "The card's exact current title, repeated back as confirmation. The card is read first " +
         'and the deletion is refused if this does not match. Example: "Fix the login redirect".',
     ),
-  board: boardField.optional().describe("Board the card is on. Recommended, and required for duplicate titles."),
-  project: projectField,
 };
 type DeleteCardArgs = z.infer<z.ZodObject<typeof deleteCardShape>>;
+
+/** Refuse two ways of changing the description at once, before anything is read. */
+function checkOneDescriptionChange(args: UpdateCardArgs): void {
+  const given = [args.description, args.append_description, args.description_edits].filter(
+    (value) => value !== undefined,
+  );
+  if (given.length > 1) {
+    throw new PlankaError(
+      "description, append_description and description_edits cannot be combined.",
+      undefined,
+      "Pass one of them: description replaces the whole text, append_description adds to its " +
+        "end, description_edits changes passages of it.",
+    );
+  }
+}
+
+/**
+ * The description a PATCH should carry, or `undefined` to leave it alone.
+ *
+ * Appending and editing start from the text Planka holds now, read fresh: the
+ * board cache can be up to a TTL old, and an edit applied to an old copy would
+ * silently undo whatever was changed meanwhile in the Planka UI. That read is
+ * one card, not the board, and it saves sending the whole text back.
+ */
+async function nextDescription(
+  cardId: string,
+  args: UpdateCardArgs,
+): Promise<{ value: string | null; previousLength?: number } | undefined> {
+  if (args.description !== undefined) {
+    // Planka refuses an empty string; null is how a description is cleared.
+    checkDescriptionLength(args.description);
+    return { value: args.description === "" ? null : args.description };
+  }
+
+  if (args.append_description === undefined && args.description_edits === undefined) return undefined;
+
+  const current = await readDescription(cardId);
+  const next =
+    args.append_description !== undefined
+      ? appendParagraph(current, args.append_description)
+      : applyEdits(current, args.description_edits ?? []);
+  checkDescriptionLength(next);
+  return { value: next === "" ? null : next, previousLength: current.length };
+}
 
 /* -------------------------------------------------------------------------- */
 /* Registration                                                                */
@@ -155,13 +275,15 @@ Examples:
     async (args: CreateCardArgs) => {
       try {
         const board = await resolveBoard(args.board, args.project);
-        const snapshot = await getBoardSnapshot(board.id);
-        const list = resolveList(snapshot, args.list);
+        const { value: list, snapshot } = await resolveOnBoard(board.id, (current) =>
+          resolveList(current, args.list),
+        );
 
         const { position } = resolvePosition(
           cardsInList(snapshot, list.id),
-          toPositionRequest(args.position as PositionInput, snapshot),
+          toPositionRequest(args.position as PositionInput, snapshot, list),
         );
+        if (args.description) checkDescriptionLength(args.description);
 
         const response = await apiRequest<ItemResponse<PlankaCard>>(`/lists/${list.id}/cards`, {
           method: "POST",
@@ -169,24 +291,20 @@ Examples:
             type: snapshot.defaultCardType,
             name: args.name,
             position,
-            ...(args.description !== undefined ? { description: args.description } : {}),
+            // Planka refuses an empty description rather than storing none.
+            ...(args.description ? { description: args.description } : {}),
             ...(args.due_date !== undefined ? { dueDate: args.due_date } : {}),
           },
         });
-        invalidateBoard(board.id);
-
-        const created = response.item;
-        const summary = projectCardSummary(created, {
-          boardName: snapshot.name,
-          listName: list.name,
-          labels: [],
-          assignees: [],
-        });
+        const summary = settle(snapshot, response.item);
 
         return respond(
           args.response_format,
-          lines(`Created in ${snapshot.name} › ${list.name}:`, renderCardLine(summary)),
-          summary,
+          lines(
+            `Created in ${snapshot.name} › ${list.name}:`,
+            summary ? renderCardLine(summary) : `- **${args.name}**`,
+          ),
+          summary ?? { name: args.name, listName: list.name },
         );
       } catch (error) {
         return toolFailure(error);
@@ -203,31 +321,41 @@ Examples:
 Only the fields you pass are touched. This tool never moves a card between lists — that is
 planka_move_card — and never changes labels, assignees or tasks.
 
-To clear the due date pass \`clear_due_date: true\`; to clear the description pass an empty
-string.
+The description can be changed three ways, one per call:
+  - \`description\` replaces the whole text (an empty string clears it);
+  - \`append_description\` adds a new paragraph at the end;
+  - \`description_edits\` replaces passages, each found exactly once in the current text.
+The last two send only what changes, so they are much faster on a long text: write a long
+document by appending to it section by section, and fix a passage without re-sending the rest.
 
-Returns: the updated card as one summary line.
+To clear the due date pass \`clear_due_date: true\`.
+
+Returns: the updated card as one summary line, and the description's new length.
 
 Examples:
   - Use when: "rename it to 'Fix the SSO redirect'" -> card="Fix the login redirect", name="Fix the SSO redirect"
   - Use when: "it's due end of month" -> due_date="2026-01-31T17:00:00.000Z"
+  - Use when: writing the next section of a chapter -> append_description="## Part 2\n\n..."
+  - Use when: "replace 'Marie' by 'Jeanne' in that sentence" -> description_edits=[{"find": "Marie regardait", "replace": "Jeanne regardait"}]
   - Don't use when: the card should change column (use planka_move_card)`,
       inputSchema: updateCardShape,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        // Sending the same field values again lands the card in the same state.
-        idempotentHint: true,
+        // Replacing fields converges, but append_description adds its text again on a replay.
+        idempotentHint: false,
         openWorldHint: true,
       },
     },
     async (args: UpdateCardArgs) => {
       try {
+        checkOneDescriptionChange(args);
         const located = await locateCard(args.card, args.board, args.project);
 
         const body: Record<string, unknown> = {};
         if (args.name !== undefined) body["name"] = args.name;
-        if (args.description !== undefined) body["description"] = args.description === "" ? null : args.description;
+        const description = await nextDescription(located.card.id, args);
+        if (description) body["description"] = description.value;
         if (args.clear_due_date) body["dueDate"] = null;
         else if (args.due_date !== undefined) body["dueDate"] = args.due_date;
         if (args.due_completed !== undefined) body["isDueCompleted"] = args.due_completed;
@@ -236,23 +364,32 @@ Examples:
           throw new PlankaError(
             "Nothing to update.",
             undefined,
-            "Pass at least one of name, description, due_date, clear_due_date or due_completed.",
+            "Pass at least one of name, description, append_description, description_edits, " +
+              "due_date, clear_due_date or due_completed.",
           );
         }
 
-        await apiRequest<ItemResponse<PlankaCard>>(`/cards/${located.card.id}`, {
+        const response = await apiRequest<ItemResponse<PlankaCard>>(`/cards/${located.card.id}`, {
           method: "PATCH",
           body,
         });
-        invalidateBoard(located.snapshot.id);
+        const summary = settle(located.snapshot, response.item, located.card);
+
+        const length = description ? (description.value ?? "").length : undefined;
+        const lengthNote =
+          length === undefined
+            ? undefined
+            : `Description: ${length} characters` +
+              `${description?.previousLength !== undefined ? ` (was ${description.previousLength})` : ""}.`;
 
         return respond(
           args.response_format,
-          lines(
-            `Updated ${Object.keys(body).join(", ")}:`,
-            await summarize(located.card.id, located.snapshot.id),
-          ),
-          { id: located.card.id, updated: Object.keys(body) },
+          lines(`Updated ${Object.keys(body).join(", ")}:`, summary ? renderCardLine(summary) : undefined, lengthNote),
+          {
+            id: located.card.id,
+            updated: Object.keys(body),
+            ...(length !== undefined ? { description_length: length } : {}),
+          },
         );
       } catch (error) {
         return toolFailure(error);
@@ -298,24 +435,25 @@ Examples:
     async (args: MoveCardArgs) => {
       try {
         const located = await locateCard(args.card, args.board, args.project);
-        const snapshot = located.snapshot;
-        const target = resolveList(snapshot, args.list);
+        const { value: target, snapshot } = await resolveOnBoard(located.snapshot.id, (current) =>
+          resolveList(current, args.list),
+        );
         const origin = located.card.listName;
 
         const siblings = cardsInList(snapshot, target.id);
         const { position, index } = resolvePosition(
           siblings,
-          toPositionRequest(args.position as PositionInput, snapshot),
+          toPositionRequest(args.position as PositionInput, snapshot, target, located.card.id),
           located.card.id,
         );
 
         // `position` is mandatory on a list change, not optional: Planka rejects
         // the PATCH without it. It is always sent, even for a same-list reorder.
-        await apiRequest<ItemResponse<PlankaCard>>(`/cards/${located.card.id}`, {
+        const response = await apiRequest<ItemResponse<PlankaCard>>(`/cards/${located.card.id}`, {
           method: "PATCH",
           body: { listId: target.id, position },
         });
-        invalidateBoard(snapshot.id);
+        const summary = settle(snapshot, response.item, located.card);
 
         const movedWithinList = located.card.listId === target.id;
         const finalCount = movedWithinList ? siblings.length : siblings.length + 1;
@@ -328,7 +466,7 @@ Examples:
               : `Moved **${located.card.name}** from **${origin}** to **${target.name}** on ${snapshot.name}.`,
             `Now at rank ${index + 1} of ${finalCount}.`,
             "",
-            await summarize(located.card.id, snapshot.id),
+            summary ? renderCardLine(summary) : undefined,
           ),
           {
             id: located.card.id,
@@ -386,11 +524,11 @@ Examples:
         const siblings = cardsInList(snapshot, archive.id);
         const { position } = resolvePosition(siblings, { kind: "bottom" }, located.card.id);
 
-        await apiRequest<ItemResponse<PlankaCard>>(`/cards/${located.card.id}`, {
+        const response = await apiRequest<ItemResponse<PlankaCard>>(`/cards/${located.card.id}`, {
           method: "PATCH",
           body: { listId: archive.id, position },
         });
-        invalidateBoard(snapshot.id);
+        settle(snapshot, response.item);
 
         return toolSuccess(
           `Archived **${located.card.name}** (was in ${located.card.listName} on ${snapshot.name}). ` +
@@ -443,7 +581,7 @@ Examples:
         }
 
         await apiRequest<ItemResponse<PlankaCard>>(`/cards/${located.card.id}`, { method: "DELETE" });
-        invalidateBoard(located.snapshot.id);
+        forgetCard(located.snapshot.id, located.card.id);
 
         return toolSuccess(
           `Deleted **${located.card.name}** from ${located.snapshot.name} › ${located.card.listName}. ` +
