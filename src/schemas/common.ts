@@ -34,6 +34,18 @@ export const projectField = reference("Project", "Infrastructure").optional()
 
 export const cardField = reference("Card", "Fix the login redirect");
 
+/** How every tool acting on one card finds it. */
+export const cardLocatorShape = {
+  card: cardField,
+  board: boardField
+    .optional()
+    .describe(
+      "Board the card is on. Recommended: without it a card id is looked up directly, but a " +
+        "title must match exactly and is searched for board by board.",
+    ),
+  project: projectField,
+};
+
 export const paginationShape = {
   limit: z
     .number()

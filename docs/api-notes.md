@@ -398,3 +398,34 @@ Relevé en montant les cas de test sur l'instance (Planka 2.2.1), puis mis en œ
 - **`GET /users` exige `admin` ou `projectOwner`** ; `GET /users/{id}` non, mais il masque
   `email` (champ privé). D'où la résolution en deux temps dans `services/users.ts` : un
   identifiant est lu directement, un nom passe par le listing.
+
+---
+
+## 9. Volumes et limites
+
+Relevé le 2026-10-07 dans le code source de Planka (`plankanban/planka`, branche principale,
+commit `627701d`), pour comprendre la lenteur d'écriture des textes longs. Les `maxLength`
+coïncident avec ceux du swagger 2.2.1.
+
+| Champ | Limite | Source |
+|---|---|---|
+| `Card.name` | 1 024 caractères | `controllers/cards/create.js`, `update.js` |
+| `Card.description` | 1 048 576 caractères, `isNotEmptyString` | idem |
+| `Comment.text` | 1 048 576 caractères | `controllers/comments/create.js` |
+| `Task.name` | 1 024 caractères | `controllers/tasks/create.js` |
+| Page de `GET /cards/{id}/comments` | 50 commentaires, du plus récent au plus ancien | `hooks/query-methods/models/Comment.js` |
+
+- **`description: ""` est refusé** (`isNotEmptyString`) à la création comme à la mise à
+  jour. Une description se vide avec `null` ; le serveur MCP n'envoie jamais de chaîne vide.
+- **`GET /boards/{id}` renvoie toutes les cartes des listes `active` et `closed` avec leur
+  description complète**, après une douzaine de requêtes SQL séquentielles côté Planka
+  (`controllers/boards/show.js`). Sur un tableau qui sert à écrire un livre, la réponse pèse
+  le livre entier. C'est la requête la plus chère que fait le serveur MCP : elle ne doit pas
+  être répétée pour confirmer une écriture.
+- **Chaque écriture de carte renvoie la carte stockée** (`{ item: Card }` sur `POST
+  /lists/{id}/cards`, `PATCH` et `DELETE /cards/{id}`). C'est ce qui permet au serveur MCP de
+  mettre son cache à jour sans relire le tableau.
+- **`GET /cards/{id}` ne met dans `included.users` que le créateur de la carte**, pas les
+  membres : les noms des assignés viennent du snapshot du tableau.
+- **`PATCH /comments/{id}`** (modifier un commentaire) existe ; il n'est pas exposé par le
+  serveur MCP.

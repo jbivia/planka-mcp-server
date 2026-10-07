@@ -17,6 +17,7 @@ export const ENV_HTTP_HOST = "PLANKA_HTTP_HOST";
 export const ENV_HTTP_PORT = "PLANKA_HTTP_PORT";
 export const ENV_HTTP_TOKEN = "PLANKA_HTTP_TOKEN";
 export const ENV_HTTP_PATH = "PLANKA_HTTP_PATH";
+export const ENV_HTTP_ALLOWED_HOSTS = "PLANKA_HTTP_ALLOWED_HOSTS";
 export const ENV_CACHE_TTL = "PLANKA_CACHE_TTL_MS";
 
 /* Defaults for the optional ones. */
@@ -24,6 +25,13 @@ export const DEFAULT_HTTP_HOST = "127.0.0.1";
 export const DEFAULT_HTTP_PORT = 3000;
 export const DEFAULT_HTTP_PATH = "/mcp";
 export const DEFAULT_CACHE_TTL_MS = 60_000;
+
+/**
+ * An HTTP session that has not been used for this long is closed. A client
+ * that goes away without a DELETE would otherwise keep its transport and its
+ * McpServer in memory for the life of the process.
+ */
+export const HTTP_SESSION_IDLE_MS = 30 * 60_000;
 
 /** Upstream request timeout. Planka is self-hosted, so this is generous. */
 export const REQUEST_TIMEOUT_MS = 30_000;
@@ -104,6 +112,17 @@ export const MAX_PAGE_SIZE = 100;
  * rather than firing dozens of requests behind the agent's back.
  */
 export const SEARCH_BOARD_LIMIT = 10;
+
+/**
+ * How many of those board reads run at once. A board read is the heaviest
+ * request Planka serves (every card with its description, a dozen queries), so
+ * a scan is parallel enough to be quick but does not fire all ten at a small
+ * self-hosted instance in the same instant.
+ */
+export const BOARD_FETCH_CONCURRENCY = 4;
+
+/** Planka's own cap on a card description (`maxLength` on create and update). */
+export const DESCRIPTION_MAX_LENGTH = 1_048_576;
 
 /** Comments are paginated by cursor upstream; this is how many we surface. */
 export const MAX_COMMENTS = 20;

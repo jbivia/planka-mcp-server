@@ -11,7 +11,7 @@ import { z } from "zod";
 import { SEARCH_BOARD_LIMIT } from "../constants.js";
 import { PlankaError } from "../errors.js";
 import { boardField, paginationShape, projectField, responseFormatField } from "../schemas/common.js";
-import { getBoardSnapshot, getProjects } from "../services/board-cache.js";
+import { getBoardSnapshot, getBoardSnapshots, getProjects } from "../services/board-cache.js";
 import { formatDate, lines, paginate, paginationFooter, respond, toolFailure } from "../services/format.js";
 import { resolveBoard, resolveLabel, resolveList, resolveMember, resolveProject } from "../services/resolve.js";
 import type { BoardSnapshot, CardSummary } from "../types.js";
@@ -321,11 +321,8 @@ Examples:
           return respond(args.response_format, "No boards to search.", { total: 0, items: [] });
         }
 
-        const matches: CardSummary[] = [];
-        for (const boardId of ids) {
-          const snapshot = await getBoardSnapshot(boardId);
-          matches.push(...filterCards(snapshot, args));
-        }
+        const snapshots = await getBoardSnapshots(ids);
+        const matches: CardSummary[] = snapshots.flatMap((snapshot) => filterCards(snapshot, args));
 
         const page = paginate(matches, args.offset, args.limit);
         const warning =

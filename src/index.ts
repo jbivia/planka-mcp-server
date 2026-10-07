@@ -17,6 +17,7 @@ import {
   ENV_BASE_URL,
   ENV_CACHE_TTL,
   ENV_EMAIL,
+  ENV_HTTP_ALLOWED_HOSTS,
   ENV_HTTP_HOST,
   ENV_HTTP_PATH,
   ENV_HTTP_PORT,
@@ -67,6 +68,8 @@ Environment:
   ${ENV_HTTP_PORT}      HTTP port (default 3000)
   ${ENV_HTTP_PATH}      HTTP endpoint path (default /mcp)
   ${ENV_HTTP_TOKEN}     if set, HTTP callers must send it as a bearer token
+  ${ENV_HTTP_ALLOWED_HOSTS}  extra Host values to accept, comma-separated (the public
+                        name a reverse proxy forwards, e.g. mcp-planka.example.com)
   ${ENV_CACHE_TTL}  board cache lifetime in ms (default 60000)
 `;
 

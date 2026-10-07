@@ -14,6 +14,7 @@ import {
   ENV_BASE_URL,
   ENV_CACHE_TTL,
   ENV_EMAIL,
+  ENV_HTTP_ALLOWED_HOSTS,
   ENV_HTTP_HOST,
   ENV_HTTP_PATH,
   ENV_HTTP_PORT,
@@ -40,6 +41,8 @@ export interface PlankaConfig {
   httpPort: number;
   httpPath: string;
   httpToken?: string;
+  /** Extra `Host` header values accepted on HTTP, e.g. the public name behind a reverse proxy. */
+  httpAllowedHosts: string[];
 }
 
 let cachedConfig: PlankaConfig | undefined;
@@ -49,13 +52,13 @@ function readEnv(name: string): string | undefined {
   return value === "" ? undefined : value;
 }
 
-function readPositiveInt(name: string, fallback: number): number {
+function readPositiveInt(name: string, fallback: number, max = Number.MAX_SAFE_INTEGER): number {
   const raw = readEnv(name);
   if (raw === undefined) return fallback;
   const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > max) {
     throw new PlankaError(
-      `${name} must be a positive integer, got "${raw}".`,
+      `${name} must be a positive integer${max < Number.MAX_SAFE_INTEGER ? ` up to ${max}` : ""}, got "${raw}".`,
       undefined,
       `Remove it to use the default (${fallback}).`,
     );
@@ -114,6 +117,7 @@ export function loadConfig(): PlankaConfig {
   }
 
   const httpPath = readEnv(ENV_HTTP_PATH) ?? DEFAULT_HTTP_PATH;
+  const httpToken = readEnv(ENV_HTTP_TOKEN);
 
   cachedConfig = {
     apiUrl,
@@ -124,9 +128,13 @@ export function loadConfig(): PlankaConfig {
     cacheTtlMs: readPositiveInt(ENV_CACHE_TTL, DEFAULT_CACHE_TTL_MS),
     transport: rawTransport,
     httpHost: readEnv(ENV_HTTP_HOST) ?? DEFAULT_HTTP_HOST,
-    httpPort: readPositiveInt(ENV_HTTP_PORT, DEFAULT_HTTP_PORT),
+    httpPort: readPositiveInt(ENV_HTTP_PORT, DEFAULT_HTTP_PORT, 65_535),
     httpPath: httpPath.startsWith("/") ? httpPath : `/${httpPath}`,
-    ...(readEnv(ENV_HTTP_TOKEN) ? { httpToken: readEnv(ENV_HTTP_TOKEN) as string } : {}),
+    ...(httpToken ? { httpToken } : {}),
+    httpAllowedHosts: (readEnv(ENV_HTTP_ALLOWED_HOSTS) ?? "")
+      .split(",")
+      .map((host) => host.trim())
+      .filter((host) => host !== ""),
   };
   return cachedConfig;
 }

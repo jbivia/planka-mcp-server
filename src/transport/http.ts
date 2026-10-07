@@ -4,7 +4,8 @@
  *
  * Stateful: each client gets its own MCP session keyed by `Mcp-Session-Id`, and
  * its own `McpServer` instance. Sessions are held in a map and dropped when the
- * transport closes.
+ * transport closes — or after HTTP_SESSION_IDLE_MS without a request, since a
+ * client that disappears without a DELETE never closes it.
  *
  * Built on `node:http` rather than Express — the transport only needs three
  * methods routed at one path, which is not worth a framework dependency.
@@ -16,7 +17,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { PlankaConfig } from "../config.js";
-import { SERVER_NAME, SERVER_VERSION } from "../constants.js";
+import { HTTP_SESSION_IDLE_MS, SERVER_NAME, SERVER_VERSION } from "../constants.js";
 
 /** Largest JSON-RPC body accepted, so a stray upload cannot exhaust memory. */
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
@@ -73,6 +74,30 @@ function readBody(req: IncomingMessage): Promise<unknown> {
 
 export async function runHttp(config: PlankaConfig, buildServer: () => McpServer): Promise<void> {
   const sessions = new Map<string, StreamableHTTPServerTransport>();
+  const lastSeen = new Map<string, number>();
+
+  // Host values the DNS-rebinding check accepts: the bind address, localhost,
+  // and whatever public name a reverse proxy forwards (PLANKA_HTTP_ALLOWED_HOSTS).
+  const allowedHosts = [
+    config.httpHost,
+    `${config.httpHost}:${config.httpPort}`,
+    "localhost",
+    `localhost:${config.httpPort}`,
+    ...config.httpAllowedHosts,
+  ];
+
+  const sweep = setInterval(() => {
+    const now = Date.now();
+    for (const [id, seen] of lastSeen) {
+      if (now - seen < HTTP_SESSION_IDLE_MS) continue;
+      lastSeen.delete(id);
+      const transport = sessions.get(id);
+      sessions.delete(id);
+      void transport?.close();
+    }
+  }, Math.min(HTTP_SESSION_IDLE_MS, 60_000));
+  // The sweep alone must not keep the process alive.
+  sweep.unref();
 
   const httpServer = createServer((req, res) => {
     void (async () => {
@@ -100,7 +125,8 @@ export async function runHttp(config: PlankaConfig, buildServer: () => McpServer
         const sessionId = req.headers["mcp-session-id"];
         const existing = typeof sessionId === "string" ? sessions.get(sessionId) : undefined;
 
-        if (existing) {
+        if (existing && typeof sessionId === "string") {
+          lastSeen.set(sessionId, Date.now());
           await existing.handleRequest(req, res, body);
           return;
         }
@@ -110,17 +136,21 @@ export async function runHttp(config: PlankaConfig, buildServer: () => McpServer
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (id: string): void => {
               sessions.set(id, transport);
+              lastSeen.set(id, Date.now());
             },
             onsessionclosed: (id: string): void => {
               sessions.delete(id);
+              lastSeen.delete(id);
             },
             // Refuse requests whose Host or Origin was not configured, so a
             // browser page cannot reach a server bound to localhost.
             enableDnsRebindingProtection: true,
-            allowedHosts: [config.httpHost, `${config.httpHost}:${config.httpPort}`, "localhost", `localhost:${config.httpPort}`],
+            allowedHosts,
           });
           transport.onclose = (): void => {
-            if (transport.sessionId) sessions.delete(transport.sessionId);
+            if (!transport.sessionId) return;
+            sessions.delete(transport.sessionId);
+            lastSeen.delete(transport.sessionId);
           };
           await buildServer().connect(transport);
           await transport.handleRequest(req, res, body);
@@ -147,6 +177,7 @@ export async function runHttp(config: PlankaConfig, buildServer: () => McpServer
   console.error(
     `${SERVER_NAME} v${SERVER_VERSION} listening on ` +
       `http://${config.httpHost}:${config.httpPort}${config.httpPath}` +
-      `${config.httpToken ? " (bearer required)" : " (no bearer configured)"}`,
+      `${config.httpToken ? " (bearer required)" : " (no bearer configured)"}` +
+      `; accepted Host: ${allowedHosts.join(", ")}`,
   );
 }

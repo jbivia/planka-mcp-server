@@ -22,7 +22,7 @@ import type {
   MemberSummary,
   ProjectSummary,
 } from "../types.js";
-import { getBoardSnapshot, getProjects } from "./board-cache.js";
+import { cacheClock, getBoardSnapshot, getProjects } from "./board-cache.js";
 
 /**
  * Planka ids are strings of digits (snowflake-shaped, e.g. 1357158568008091264),
@@ -163,6 +163,30 @@ export async function resolveBoard(
   );
 }
 
+/**
+ * Resolve something on a board, re-reading the board once if the cached copy
+ * does not know it.
+ *
+ * A cached board can be a TTL old, so a card or list created in the Planka UI
+ * meanwhile is not in it yet — and failing on it would send the agent hunting
+ * for a typo that is not there. Only a copy that predates this call is retried:
+ * a board read just now is as fresh as it gets.
+ */
+export async function resolveOnBoard<T>(
+  boardId: string,
+  resolve: (snapshot: BoardSnapshot) => T,
+): Promise<{ value: T; snapshot: BoardSnapshot }> {
+  const askedAt = cacheClock();
+  const snapshot = await getBoardSnapshot(boardId);
+  try {
+    return { value: resolve(snapshot), snapshot };
+  } catch (error) {
+    if (!(error instanceof PlankaError) || snapshot.fetchedAt > askedAt) throw error;
+    const fresh = await getBoardSnapshot(boardId, true);
+    return { value: resolve(fresh), snapshot: fresh };
+  }
+}
+
 /** Resolve a board reference all the way to its loaded snapshot. */
 export async function resolveBoardSnapshot(
   reference: string,
@@ -211,9 +235,9 @@ export function resolveLabel(snapshot: BoardSnapshot, reference: string): LabelS
 /**
  * Resolve a board member.
  *
- * Matching also covers username and email, because an agent is as likely to be
- * handed "jdoe" or an address as a display name. They are folded into the
- * `name` field of throwaway candidates so a single matcher handles all three.
+ * Matching also covers the username, because an agent is as likely to be handed
+ * "jdoe" as a display name. (Not the email: Planka hides it from most callers
+ * on the board route, so it cannot be relied on here.)
  */
 export function resolveMember(snapshot: BoardSnapshot, reference: string): MemberSummary {
   const trimmed = reference.trim().toLowerCase();
